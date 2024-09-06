@@ -7,3 +7,4 @@ alloranetwork_worker.code-workspace
 config.json
 env_file
 worker-data
+training_*
