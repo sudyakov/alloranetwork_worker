@@ -4,10 +4,6 @@ import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import logging
-from download_data import get_binance_data
-
-def update_data(df, scaler, symbols):
-    new_data = {symbol: get_binance_data(symbol) for symbol in symbols}
 
 class GraphAttentionLayer(nn.Module):
     def __init__(self, in_features, out_features, dropout, alpha, concat=True):
@@ -43,10 +39,10 @@ class GraphAttentionLayer(nn.Module):
         return self.leakyrelu(e)
 
 class EnhancedBiLSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_layer_size=1024, output_size=1, num_layers=4, dropout=0.3, num_tokens=5):
+    def __init__(self, input_size, hidden_layer_size=1024, output_size=1, num_layers=6, dropout=0.3, num_tokens=5):
         super(EnhancedBiLSTMModel, self).__init__()
         self.lstm = nn.LSTM(input_size, hidden_layer_size, num_layers=num_layers, dropout=dropout, batch_first=True, bidirectional=True)
-        self.attention = nn.MultiheadAttention(hidden_layer_size * 2, num_heads=8)
+        self.attention = nn.MultiheadAttention(hidden_layer_size * 2, num_heads=4)
         self.gat1 = GraphAttentionLayer(hidden_layer_size * 2, hidden_layer_size, dropout=0.6, alpha=0.2)
         self.gat2 = GraphAttentionLayer(hidden_layer_size, hidden_layer_size // 2, dropout=0.6, alpha=0.2)
         self.fc1 = nn.Linear(hidden_layer_size // 2 * num_tokens, hidden_layer_size)
@@ -109,7 +105,3 @@ def evaluate_model(model, test_loader, scaler):
     logging.info(f"Mean Squared Error: {mse}")
     logging.info(f"Mean Absolute Error: {mae}")
     logging.info(f"R2 Score: {r2}")
-
-
-
-

@@ -12,7 +12,9 @@ from gpu_util import print_gpu_utilization, get_device_info
 from download_data import load_data, update_data
 from model import EnhancedBiLSTMModel, EarlyStopping, evaluate_model
 from utils import prepare_data
-from sklearn.preprocessing import MinMaxScaler
+# Установите torch_geometric, если он еще не установлен
+# pip install torch-geometric
+import torch_geometric
 
 # Настройка логирования
 logging.basicConfig(filename=f'training_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log', level=logging.INFO,
@@ -22,27 +24,33 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Используется устройство: {device} - OK.")
 
 def optimize_hyperparameters(X, y):
+    input_size = X.shape[2]
+    num_tokens = X.shape[1]
+    
+    adj_matrix = torch.ones(num_tokens, num_tokens) - torch.eye(num_tokens)
+    
     net = NeuralNetRegressor(
         EnhancedBiLSTMModel,
+        module__input_size=input_size,
+        module__num_tokens=num_tokens,
         max_epochs=100,
         lr=0.01,
         device=device,
         optimizer=optim.Adam,
         criterion=nn.MSELoss,
     )
-
+    
     param_dist = {
         'lr': uniform(0.0001, 0.1),
         'module__hidden_layer_size': randint(32, 256),
         'module__num_layers': randint(1, 4),
         'optimizer__weight_decay': uniform(0, 0.1),
     }
-
+    
     search = RandomizedSearchCV(net, param_dist, n_iter=20, cv=3, scoring='neg_mean_squared_error')
-    search.fit(X, y)
-
+    search.fit(X, y, adj_matrix=adj_matrix.to(device))
+    
     return search.best_params_
-
 def create_adjacency_matrix(symbols):
     num_tokens = len(symbols)
     adj_matrix = torch.ones(num_tokens, num_tokens) - torch.eye(num_tokens)
@@ -79,7 +87,7 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, num_epoch
         val_loss = 0
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
-                outputs = model(batch_x, adj_matrix)
+                outputs = model(batch_x)
                 loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
         
@@ -99,7 +107,7 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, num_epoch
             break
         
         if (epoch + 1) % 10 == 0:
-            df, x_new, y_new = update_data(df, scaler, symbols)
+            df, x_new, y_new = update_data(df, scaler)
             
             train_loader.dataset.tensors = (
                 torch.cat([train_loader.dataset.tensors[0], x_new.repeat(5, 1, 1)]),
@@ -172,3 +180,31 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+class EnhancedBiLSTMModel(nn.Module):
+    def __init__(self, input_size, hidden_layer_size=1024, output_size=1, num_layers=4, dropout=0.3, num_tokens=5):
+        super(EnhancedBiLSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_layer_size, num_layers=num_layers, dropout=dropout, batch_first=True, bidirectional=True)
+        self.attention = nn.MultiheadAttention(hidden_layer_size * 2, num_heads=8)
+        self.gat1 = torch_geometric.nn.GATConv(hidden_layer_size * 2, hidden_layer_size, dropout=0.6, alpha=0.2, concat=True)
+        self.gat2 = torch_geometric.nn.GATConv(hidden_layer_size, hidden_layer_size // 2, dropout=0.6, alpha=0.2, concat=True)
+        self.fc1 = nn.Linear(hidden_layer_size // 2 * num_tokens, hidden_layer_size)
+        self.fc2 = nn.Linear(hidden_layer_size, hidden_layer_size // 2)
+        self.fc3 = nn.Linear(hidden_layer_size // 2, output_size)
+        self.relu = nn.ReLU()
+
+    def forward(self, input_seq, adj_matrix):
+        batch_size, num_tokens, seq_len, features = input_seq.shape
+        input_seq = input_seq.view(batch_size * num_tokens, seq_len, features)
+        
+        lstm_out, _ = self.lstm(input_seq)
+        attn_output, _ = self.attention(lstm_out, lstm_out, lstm_out)
+        
+        gat_input = attn_output[:, -1].view(batch_size, num_tokens, -1)
+        gat_out1 = self.gat1(gat_input, adj_matrix)
+        gat_out2 = self.gat2(gat_out1, adj_matrix)
+        
+        x = gat_out2.view(batch_size, -1)
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+        return self.fc3(x)

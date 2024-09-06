@@ -5,25 +5,20 @@ from glob import glob
 from datetime import datetime, timedelta
 from utils import prepare_data
 
-# List of pairs for which data needs to be downloaded
 symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ARBUSDT"]
 
-# Dictionary of intervals and corresponding periods in days
 intervals_periods = {
-    # "1s": 1,    # 1 second - for the last day
-    "1m": 30,   # 1 minute - for the last 30 days
-    "3m": 90,   # 3 minutes - for the last 90 days
-    # "5m": 180,  # 5 minutes - for the last 180 days
-    # "15m": 180, # 15 minutes - for the last year
-    # "30m": 365, # 30 minutes - for the last year
-    # "1h": 365,  # 1 hour - for the last year
-    # "1d": 730,  # 1 day - for the last 2 years
-    # "3d": 1095, # 3 days - for the last 3 years
-    # "1w": 1825, # 1 week - for the last 5 years
-    # "1mo": 3650 # 1 month - for the last 10 years
+    "1m": 30,
+    "3m": 90,
 }
 
-seq_length = 60  # или другое подходящее значение
+folder = "binance-data"
+
+seq_length = 60
+
+def prepare_data(df, seq_length, symbols):
+    # Реализация функции prepare_data
+    pass
 
 def load_binance_data_from_folder(folder):
     data = {}
@@ -112,11 +107,9 @@ def update_data(df, scaler, symbols):
     x_new, y_new, _ = prepare_data(new_data, seq_length, symbols)
     return df, x_new, y_new
 
-# Create "binance-data" folder if it doesn't exist
 if not os.path.exists("binance-data"):
     os.makedirs("binance-data")
 
-# Load data for each pair and interval
 for symbol in symbols:
     for interval, period in intervals_periods.items():
         print(f"Starting data download for pair {symbol} and interval {interval}")
@@ -135,9 +128,5 @@ for symbol in symbols:
             print(f"Failed to load data for pair {symbol} and interval {interval}")
         print("------------------------")
 
-# Load data from "binance-data" folder recursively
-folder = "binance-data"
 binance_data = load_binance_data_from_folder(folder)
-
-# Save combined dataset to file
 save_combined_dataset(binance_data, "combined_dataset.csv")
