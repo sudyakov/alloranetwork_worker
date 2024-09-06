@@ -3,18 +3,16 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.cuda import amp
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import RandomizedSearchCV
 from skorch import NeuralNetRegressor
 from scipy.stats import uniform, randint
-import matplotlib.pyplot as plt
-import os
 import logging
 from datetime import datetime
 from gpu_util import print_gpu_utilization, get_device_info
-from downloads_data import load_data, update_data
-
+from download_data import load_data, update_data
 from model import EnhancedBiLSTMModel, EarlyStopping, evaluate_model
+from utils import prepare_data
+from sklearn.preprocessing import MinMaxScaler
 
 # Настройка логирования
 logging.basicConfig(filename=f'training_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log', level=logging.INFO,
@@ -22,17 +20,6 @@ logging.basicConfig(filename=f'training_{datetime.now().strftime("%Y%m%d_%H%M%S"
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Используется устройство: {device} - OK.")
-
-def prepare_data(df, seq_length):
-    scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(df[['open', 'high', 'low', 'close', 'volume']].values)
-    
-    x, y = [], []
-    for i in range(len(scaled_data) - seq_length):
-        x.append(scaled_data[i:(i + seq_length)])
-        y.append(scaled_data[i + seq_length, 3])
-    
-    return torch.FloatTensor(x).to(device), torch.FloatTensor(y).to(device), scaler
 
 def optimize_hyperparameters(X, y):
     net = NeuralNetRegressor(
@@ -51,19 +38,18 @@ def optimize_hyperparameters(X, y):
         'optimizer__weight_decay': uniform(0, 0.1),
     }
 
-    search = RandomizedSearchCV(
-        net,
-        param_dist,
-        n_iter=20,
-        cv=3,
-        scoring='neg_mean_squared_error',
-        n_jobs=-1,
-    )
-
+    search = RandomizedSearchCV(net, param_dist, n_iter=20, cv=3, scoring='neg_mean_squared_error')
     search.fit(X, y)
+
     return search.best_params_
 
+def create_adjacency_matrix(symbols):
+    num_tokens = len(symbols)
+    adj_matrix = torch.ones(num_tokens, num_tokens) - torch.eye(num_tokens)
+    return adj_matrix.to(device)
+
 def train_model(model, criterion, optimizer, train_loader, val_loader, num_epochs, symbols, df, scaler):
+    adj_matrix = create_adjacency_matrix(symbols)
     scaler = amp.GradScaler()
     best_loss = float('inf')
     train_losses = []
@@ -77,7 +63,7 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, num_epoch
             optimizer.zero_grad()
             
             with amp.autocast():
-                outputs = model(batch_x)
+                outputs = model(batch_x, adj_matrix)
                 loss = criterion(outputs, batch_y)
             
             scaler.scale(loss).backward()
@@ -93,7 +79,7 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, num_epoch
         val_loss = 0
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
-                outputs = model(batch_x)
+                outputs = model(batch_x, adj_matrix)
                 loss = criterion(outputs, batch_y)
                 val_loss += loss.item()
         
@@ -128,48 +114,59 @@ def train_model(model, criterion, optimizer, train_loader, val_loader, num_epoch
             }, f"checkpoint_epoch_{epoch+1}.pth")
             
             print(f"Промежуточные результаты сохранены для эпохи {epoch+1}")
-    
-    # plot_training_results(train_losses, val_losses)
 
-def main():
-    logging.info("Начало обучения")
-    print(get_device_info())
-    
-    df = load_data()
-    symbols = df['symbol'].unique().tolist()
-    seq_length = 60
-    x, y, scaler = prepare_data(df, seq_length)
-    
-    best_params = optimize_hyperparameters(x.cpu().numpy(), y.cpu().numpy())
-    print("Оптимальные гиперпараметры:", best_params)
-    
-    train_size = int(0.7 * len(x))
-    val_size = int(0.15 * len(x))
-    test_size = len(x) - train_size - val_size
-    
+def create_datasets(x, y, train_size, val_size):
     train_dataset = TensorDataset(x[:train_size], y[:train_size])
     val_dataset = TensorDataset(x[train_size:train_size+val_size], y[train_size:train_size+val_size])
     test_dataset = TensorDataset(x[train_size+val_size:], y[train_size+val_size:])
-    
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-    
-    model = EnhancedBiLSTMModel(
+    return train_dataset, val_dataset, test_dataset
+
+def create_dataloaders(train_dataset, val_dataset, test_dataset, batch_size=32):
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    return train_loader, val_loader, test_loader
+
+def create_model(best_params, symbols):
+    return EnhancedBiLSTMModel(
         input_size=5, 
         hidden_layer_size=best_params['module__hidden_layer_size'], 
         output_size=1, 
-        num_layers=best_params['module__num_layers']
+        num_layers=best_params['module__num_layers'],
+        num_tokens=len(symbols)
     ).to(device)
-    
+
+def create_criterion_and_optimizer(model, best_params):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=best_params['lr'], weight_decay=best_params['optimizer__weight_decay'])
-    
+    return criterion, optimizer
+
+def main():
+    seq_length = 60
+    logging.info("Начало обучения")
+    print(get_device_info())
+
+    df = load_data()
+    symbols = df['symbol'].unique().tolist()
+    x, y, scaler = prepare_data(df, seq_length, symbols)
+
+    best_params = optimize_hyperparameters(x.cpu().numpy(), y.cpu().numpy())
+    print("Оптимальные гиперпараметры:", best_params)
+
+    train_size = int(0.7 * len(x))
+    val_size = int(0.15 * len(x))
+
+    train_dataset, val_dataset, test_dataset = create_datasets(x, y, train_size, val_size)
+    train_loader, val_loader, test_loader = create_dataloaders(train_dataset, val_dataset, test_dataset)
+
+    model = create_model(best_params, symbols)
+    criterion, optimizer = create_criterion_and_optimizer(model, best_params)
+
     train_model(model, criterion, optimizer, train_loader, val_loader, num_epochs=100, symbols=symbols, df=df, scaler=scaler)
-    
+
     model.load_state_dict(torch.load("best_model.pth"))
     evaluate_model(model, test_loader, scaler)
-    
+
     logging.info("Обучение завершено. Результаты сохранены.")
     print_gpu_utilization()
 

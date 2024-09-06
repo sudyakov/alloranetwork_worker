@@ -3,11 +3,7 @@ import pandas as pd
 import os
 from glob import glob
 from datetime import datetime, timedelta
-
-# DataSet example
-# symbol,interval,open,high,low,close,volume
-# BNBUSDT,3m,684.0,684.2,680.0,680.2,1992.147
-# BNBUSDT,3m,680.1,681.3,680.1,680.8,884.872
+from utils import prepare_data
 
 # List of pairs for which data needs to be downloaded
 symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ARBUSDT"]
@@ -26,6 +22,8 @@ intervals_periods = {
     # "1w": 1825, # 1 week - for the last 5 years
     # "1mo": 3650 # 1 month - for the last 10 years
 }
+
+seq_length = 60  # или другое подходящее значение
 
 def load_binance_data_from_folder(folder):
     data = {}
@@ -64,7 +62,6 @@ def get_all_binance_data(symbol, interval, start_date, end_date):
     if not os.path.exists(csv_filename):
         df_existing = pd.DataFrame()
     else:
-        # If the file already exists, load data from it
         df_existing = pd.read_csv(csv_filename, parse_dates=["timestamp"], index_col="timestamp")
         start_date = df_existing.index[-1] + pd.Timedelta(minutes=1)
     
@@ -99,6 +96,22 @@ def save_to_csv(df, filename):
     df.to_csv(filename, index=False)
     print(f"Data saved to file {filename}")
 
+def save_combined_dataset(data, filename):
+    combined_data = pd.concat(data.values(), ignore_index=True)
+    combined_data.to_csv(filename, index=False)
+    print(f"Combined dataset saved to file {filename}")
+
+def load_data():
+    return pd.read_csv("combined_dataset.csv")
+
+def update_data(df, scaler, symbols):
+    new_data = {symbol: get_binance_data(symbol) for symbol in symbols}
+    
+    df = pd.concat([df] + list(new_data.values())).drop_duplicates().reset_index(drop=True)
+    
+    x_new, y_new, _ = prepare_data(new_data, seq_length, symbols)
+    return df, x_new, y_new
+
 # Create "binance-data" folder if it doesn't exist
 if not os.path.exists("binance-data"):
     os.makedirs("binance-data")
@@ -127,9 +140,4 @@ folder = "binance-data"
 binance_data = load_binance_data_from_folder(folder)
 
 # Save combined dataset to file
-def save_combined_dataset(data, filename):
-    combined_data = pd.concat(data.values(), ignore_index=True)
-    combined_data.to_csv(filename, index=False)
-    print(f"Combined dataset saved to file {filename}")
-
 save_combined_dataset(binance_data, "combined_dataset.csv")
