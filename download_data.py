@@ -10,6 +10,9 @@ symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ARBUSDT"]
 intervals_periods = {
     "1m": 30,
     "3m": 90,
+    "5m": 150,
+    "30": 450,
+    "1h": 900
 }
 
 folder = "binance-data"
