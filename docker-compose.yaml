@@ -1,0 +1,46 @@
+services:
+  inference:
+    container_name: inference-hf
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -u /app/app.py
+    ports:
+      - "8000:8000"
+    networks:
+      - allora_network
+    volumes:
+      - trained-models:/app/models  # Монтируем volume для доступа к моделям
+
+  worker:
+    container_name: worker
+    image: alloranetwork/allora-offchain-node:latest
+    volumes:
+      - ./worker-data:/data
+    depends_on:
+      - inference
+    env_file:
+      - ./worker-data/env_file
+    networks:
+      - allora_network
+
+  train:
+    container_name: model-trainer
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -u /app/train.py
+    volumes:
+      - ./:/app
+      - trained-models:/app/models
+    networks:
+      - allora_network
+
+volumes:
+  inference-data:
+  worker-data:
+  trained-models:  # Новый volume для обученных моделей
+
+networks:
+  allora_network:
+    driver: bridge
